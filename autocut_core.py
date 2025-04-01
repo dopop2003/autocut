@@ -1,4 +1,4 @@
-# autocut_core.py v2.4.3
+# autocut_core.py v2.4.4
 import os, subprocess, wave, srt, numpy as np, shutil, tempfile, atexit
 import ctypes, time, psutil, platform
 from tqdm import tqdm
@@ -212,16 +212,35 @@ def generate_new_srt(subtitles, output_path, filter_texts, start_index, end_inde
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(srt.compose(new_subs))
 
+def extract_audio_from_mp4(input_mp4, output_mp3):
+    cmd = ["ffmpeg", "-y", "-i", input_mp4, "-vn", "-acodec", "libmp3lame", output_mp3]
+    safe_ffmpeg_run(cmd)
+
+def extract_clip_mp4(input_mp4, start_time, duration, output_clip_mp4):
+    cmd = ["ffmpeg", "-y", "-ss", str(round(max(0, start_time), 6)),
+           "-t", str(round(duration, 6)), "-i", input_mp4,
+           "-c:v", "copy", "-c:a", "copy", "-max_muxing_queue_size", "9999", output_clip_mp4]
+    safe_ffmpeg_run(cmd)
+
+def generate_mp4(input_audio, input_video, output_mp4):
+    cmd = ["ffmpeg", "-y", "-i", input_video, "-i", input_audio, "-c:v", "copy", "-c:a", "aac", output_mp4]
+    safe_ffmpeg_run(cmd)
+
 def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
          filter_file_path, start_index, end_index, output_format="mp3", quality="high"):
-    
-    print("🚀 AutoCut Core v2.4.2 (精简版) 启动")
+    print("🚀 AutoCut Core v2.4.4 启动")
     print("🖥️ 系统信息:", get_system_info())
-    
+
     try:
         kill_ffmpeg_processes()
         clean_temp_files()
         os.makedirs(TEMP_DIR, exist_ok=True)
+
+        input_video_path = None
+        if input_audio_path.lower().endswith('.mp4'):
+            input_video_path = input_audio_path
+            input_audio_path = os.path.join(TEMP_DIR, "extracted_audio.mp3")
+            extract_audio_from_mp4(input_video_path, input_audio_path)
 
         if not all(os.path.exists(f) for f in [input_audio_path, input_srt_path]):
             missing = [f for f in [input_audio_path, input_srt_path] if not os.path.exists(f)]
@@ -269,16 +288,29 @@ def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
             batch_wavs.append(batch_wav)
 
         print("\n🧩 步骤3/4: 合并输出...")
-        if output_format == "wav":
-            with wave.open(temp_files['final_wav'], 'wb') as out_wav:
-                with wave.open(batch_wavs[0], 'rb') as in_wav:
-                    out_wav.setparams(in_wav.getparams())
-                for bw in batch_wavs:
-                    with wave.open(bw, 'rb') as in_wav:
-                        out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
-            shutil.move(temp_files['final_wav'], output_audio_path)
+        if output_format == "mp4":
+            temp_audio = output_audio_path
+            output_audio_path = os.path.join(TEMP_DIR, "temp_audio.mp3")
+            parallel_compress_segments(batch_wavs, output_audio_path, "mp3", quality)
+
+            # 裁剪视频
+            clipped_video_path = os.path.join(TEMP_DIR, "clipped_video.mp4")
+            extract_clip_mp4(input_video_path, clip_start_time, clip_duration, clipped_video_path)
+
+            # 合并裁剪后的视频和音频
+            generate_mp4(output_audio_path, clipped_video_path, temp_audio)
+            output_audio_path = temp_audio
         else:
-            parallel_compress_segments(batch_wavs, output_audio_path, output_format, quality)
+            if output_format == "wav":
+                with wave.open(temp_files['final_wav'], 'wb') as out_wav:
+                    with wave.open(batch_wavs[0], 'rb') as in_wav:
+                        out_wav.setparams(in_wav.getparams())
+                    for bw in batch_wavs:
+                        with wave.open(bw, 'rb') as in_wav:
+                            out_wav.writeframes(in_wav.readframes(in_wav.getnframes()))
+                shutil.move(temp_files['final_wav'], output_audio_path)
+            else:
+                parallel_compress_segments(batch_wavs, output_audio_path, output_format, quality)
 
         print("\n📝 步骤4/4: 生成字幕...")
         generate_new_srt(subtitles, output_srt_path, filter_texts, start_index, end_index)

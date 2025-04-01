@@ -1,4 +1,4 @@
-#autocut_gui.py v2.4.3
+#autocut_gui.py v2.4.4
 import tkinter as tk 
 from tkinter import filedialog, messagebox, ttk 
 import threading 
@@ -109,9 +109,9 @@ class AutoCutGUI:
         audio_frame.pack(fill="x",  pady=5)
         
         ttk.Label(audio_frame, text="输出格式:").pack(side="left", padx=(0, 5))
-        self.format_var  = tk.StringVar(value="mp3")
+        self.format_var = tk.StringVar(value="mp3")
         ttk.Combobox(audio_frame, textvariable=self.format_var,  
-                    values=['mp3', 'wav', 'm4a'], state="readonly", width=10).pack(side="left", padx=(0, 20))
+                     values=['mp3', 'wav', 'm4a', 'mp4'], state="readonly", width=10).pack(side="left", padx=(0, 20))
         
         ttk.Label(audio_frame, text="音质等级:").pack(side="left", padx=(0, 5))
         self.quality_var  = tk.StringVar(value="high")
