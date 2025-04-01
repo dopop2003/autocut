@@ -110,8 +110,10 @@ class AutoCutGUI:
         
         ttk.Label(audio_frame, text="输出格式:").pack(side="left", padx=(0, 5))
         self.format_var = tk.StringVar(value="mp3")
-        ttk.Combobox(audio_frame, textvariable=self.format_var,  
-                     values=['mp3', 'wav', 'm4a', 'mp4'], state="readonly", width=10).pack(side="left", padx=(0, 20))
+        combobox = ttk.Combobox(audio_frame, textvariable=self.format_var,  
+                     values=['mp3', 'wav', 'm4a', 'mp4'], state="readonly", width=10)
+        combobox.pack(side="left", padx=(0, 20))
+        combobox.bind("<<ComboboxSelected>>", self.update_output_extension)
         
         ttk.Label(audio_frame, text="音质等级:").pack(side="left", padx=(0, 5))
         self.quality_var  = tk.StringVar(value="high")
@@ -173,7 +175,15 @@ class AutoCutGUI:
         if path:
             entry.delete(0,  tk.END)
             entry.insert(0,  path)
- 
+
+    def update_output_extension(self, event=None):
+        output_path = self.entries["output_mp3"].get()
+        ext = f".{self.format_var.get()}"
+        if not output_path.lower().endswith(ext):
+            output_path = os.path.splitext(output_path)[0] + ext
+            self.entries["output_mp3"].delete(0, tk.END)
+            self.entries["output_mp3"].insert(0, output_path)
+
     def update_progress_status(self, status_text, progress_value=None):
         self.status_label.config(text=f" 状态：{status_text}")
         if progress_value is not None:
