@@ -195,21 +195,23 @@ class AutoCutGUI:
             self.update_progress_status("🔄  初始化处理环境...", 0)
             
             required = ["input_audio", "input_srt", "output_mp3", "output_srt", "filter_file"]
-            if not all(self.entries[key].get()  for key in required):
+            if not all(self.entries[key].get() for key in required):
                 raise ValueError("请填写所有路径字段。")
-                
-            for key, name in zip(required, ["输入音频", "输入字幕", "过滤文本"]):
-                if not os.path.exists(self.entries[key].get()): 
-                    raise FileNotFoundError(f"{name}文件不存在: {self.entries[key].get()}") 
- 
-            start_index = int(self.entries["start_index"].get()  or "1")
+
+            names = ["输入音频", "输入字幕", "输出音频", "输出字幕", "过滤文本"]
+            for key, name in zip(required, names):
+                path = self.entries[key].get()
+                if key not in ["output_mp3", "output_srt"] and not os.path.exists(path): 
+                    raise FileNotFoundError(f"{name}文件不存在: {path}")
+
+            start_index = int(self.entries["start_index"].get() or "1")
             end_index = self.get_end_index(self.entries["input_srt"].get()) 
- 
+
             output_path = self.entries["output_mp3"].get() 
             ext = f".{self.format_var.get()}" 
             if not output_path.lower().endswith(ext): 
-                output_path = os.path.splitext(output_path)[0]  + ext 
- 
+                output_path = os.path.splitext(output_path)[0] + ext 
+
             main(
                 input_audio_path=self.entries["input_audio"].get(), 
                 input_srt_path=self.entries["input_srt"].get(), 
@@ -221,16 +223,16 @@ class AutoCutGUI:
                 output_format=self.format_var.get(), 
                 quality=self.quality_var.get() 
             )
- 
+
             self.update_progress_status("✅  处理完成！")
             messagebox.showinfo(" 完成", f"音频剪辑和字幕处理完成！\n输出文件：{output_path}")
- 
+
         except Exception as e:
             self.update_progress_status(f"❌  错误：{str(e)}")
             messagebox.showerror(" 错误", str(e))
         finally:
             self.process_button.config(state="normal") 
-            self.is_processing  = False 
+            self.is_processing = False
  
     def get_end_index(self, srt_path):
         try:
