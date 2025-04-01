@@ -1,4 +1,4 @@
-# autocut_core.py v2.4.4
+# autocut_core.py v2.4.5
 import os, subprocess, wave, srt, numpy as np, shutil, tempfile, atexit
 import ctypes, time, psutil, platform
 from tqdm import tqdm
@@ -226,6 +226,40 @@ def generate_mp4(input_audio, input_video, output_mp4):
     cmd = ["ffmpeg", "-y", "-i", input_video, "-i", input_audio, "-c:v", "copy", "-c:a", "aac", output_mp4]
     safe_ffmpeg_run(cmd)
 
+def get_audio_duration(audio_path):
+    """
+    使用 ffprobe 获取音频文件的时长（单位：秒）
+    """
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        audio_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return float(result.stdout.strip())
+
+def convert_audio_to_video(input_audio_path, output_video_path, resolution="1280x720", color="black"):
+    """
+    使用 FFmpeg 将音频转换为带黑色背景的视频，背景时长 = 音频时长
+    """
+    duration = get_audio_duration(input_audio_path)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi",
+        "-i", f"color=c={color}:s={resolution}:d={duration}",
+        "-i", input_audio_path,
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        "-pix_fmt", "yuv420p",
+        output_video_path
+    ]
+    print(f"🎧 自动将音频转换为视频: {output_video_path}")
+    safe_ffmpeg_run(cmd)
+
 def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
          filter_file_path, start_index, end_index, output_format="mp3", quality="high"):
     print("🚀 AutoCut Core v2.4.4 启动")
@@ -289,17 +323,20 @@ def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
 
         print("\n🧩 步骤3/4: 合并输出...")
         if output_format == "mp4":
-            temp_audio = output_audio_path
-            output_audio_path = os.path.join(TEMP_DIR, "temp_audio.mp3")
-            parallel_compress_segments(batch_wavs, output_audio_path, "mp3", quality)
+                    temp_audio = output_audio_path
+                    output_audio_path = os.path.join(TEMP_DIR, "temp_audio.mp3")
+                    parallel_compress_segments(batch_wavs, output_audio_path, "mp3", quality)
 
-            # 裁剪视频
-            clipped_video_path = os.path.join(TEMP_DIR, "clipped_video.mp4")
-            extract_clip_mp4(input_video_path, clip_start_time, clip_duration, clipped_video_path)
+                    if input_video_path:
+                        # 如果原始输入是视频，裁剪并合成
+                        clipped_video_path = os.path.join(TEMP_DIR, "clipped_video.mp4")
+                        extract_clip_mp4(input_video_path, clip_start_time, clip_duration, clipped_video_path)
+                        generate_mp4(output_audio_path, clipped_video_path, temp_audio)
+                    else:
+                        # 如果原始输入是音频，自动生成黑色背景的视频
+                        convert_audio_to_video(output_audio_path, temp_audio)
 
-            # 合并裁剪后的视频和音频
-            generate_mp4(output_audio_path, clipped_video_path, temp_audio)
-            output_audio_path = temp_audio
+                    output_audio_path = temp_audio
         else:
             if output_format == "wav":
                 with wave.open(temp_files['final_wav'], 'wb') as out_wav:

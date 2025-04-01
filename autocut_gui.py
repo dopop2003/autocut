@@ -1,4 +1,4 @@
-#autocut_gui.py v2.4.4
+#autocut_gui.py v2.4.5
 import tkinter as tk 
 from tkinter import filedialog, messagebox, ttk 
 import threading 
