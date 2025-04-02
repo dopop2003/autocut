@@ -193,13 +193,19 @@ def parallel_compress_segments(wav_files, output_path, output_format, quality):
     safe_ffmpeg_run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                      "-i", concat_file, "-c", "copy", output_path])
 
-def generate_new_srt(subtitles, output_path, filter_texts, start_index, end_index):
+def generate_new_srt(subtitles, output_path, filter_texts, start_index, end_index, adjusted_subs=None):
     current_time = 0.0
     new_subs = []
 
-    for _, start, end, content in subtitles[start_index-1:end_index]:
-        if content.strip() in filter_texts:
-            continue
+    # 如果提供了已调整的字幕列表，就使用它
+    if adjusted_subs is not None:
+        source_subs = adjusted_subs
+    else:
+        source_subs = [(i, start, end, content) 
+                       for i, start, end, content in subtitles[start_index-1:end_index]
+                       if content.strip() not in filter_texts]
+
+    for _, start, end, content in source_subs:
         duration = end - start
         new_subs.append(srt.Subtitle(
             index=len(new_subs)+1,
@@ -323,20 +329,122 @@ def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
 
         print("\n🧩 步骤3/4: 合并输出...")
         if output_format == "mp4":
-                    temp_audio = output_audio_path
-                    output_audio_path = os.path.join(TEMP_DIR, "temp_audio.mp3")
-                    parallel_compress_segments(batch_wavs, output_audio_path, "mp3", quality)
-
-                    if input_video_path:
-                        # 如果原始输入是视频，裁剪并合成
-                        clipped_video_path = os.path.join(TEMP_DIR, "clipped_video.mp4")
-                        extract_clip_mp4(input_video_path, clip_start_time, clip_duration, clipped_video_path)
-                        generate_mp4(output_audio_path, clipped_video_path, temp_audio)
-                    else:
-                        # 如果原始输入是音频，自动生成黑色背景的视频
-                        convert_audio_to_video(output_audio_path, temp_audio)
-
-                    output_audio_path = temp_audio
+            temp_audio = output_audio_path
+            temp_audio_mp3 = os.path.join(TEMP_DIR, "temp_audio.mp3")
+            
+            # 处理音频部分
+            parallel_compress_segments(batch_wavs, temp_audio_mp3, "mp3", quality)
+            
+            if input_video_path:
+                # 创建一个过滤器复杂表达式来一次性处理视频
+                filter_file = os.path.join(TEMP_DIR, "filter_complex.txt")
+                
+                # 计算需要保留的片段
+                segments = []
+                for _, start, end, content in adjusted_subtitles:
+                    segments.append((start, end))
+                
+                # 合并连续或重叠的片段以减少片段数量
+                merged_segments = []
+                if segments:
+                    current_start, current_end = segments[0]
+                    for start, end in segments[1:]:
+                        # 如果当前片段与下一片段的间隔小于0.5秒，则合并它们
+                        if start - current_end <= 0.5:
+                            current_end = end
+                        else:
+                            merged_segments.append((current_start, current_end))
+                            current_start, current_end = start, end
+                    merged_segments.append((current_start, current_end))
+                
+                print(f"🎬 优化视频片段: 从 {len(segments)} 个减少到 {len(merged_segments)} 个")
+                
+                # 创建过滤器复杂表达式
+                if len(merged_segments) <= 50:  # FFmpeg对filter_complex的长度有限制
+                    filter_parts = []
+                    for i, (start, end) in enumerate(merged_segments):
+                        duration = end - start
+                        filter_parts.append(f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{i}];")
+                    
+                    # 连接所有片段
+                    filter_str = "".join(filter_parts)
+                    if merged_segments:
+                        filter_str += "".join(f"[v{i}]" for i in range(len(merged_segments))) + f"concat=n={len(merged_segments)}:v=1:a=0[outv]"
+                        
+                        try:
+                            # 使用filter_complex一次性处理视频
+                            merged_video_no_audio = os.path.join(TEMP_DIR, "merged_video_no_audio.mp4")
+                            cmd = [
+                                "ffmpeg", "-y", "-i", input_video_path,
+                                "-filter_complex", filter_str,
+                                "-map", "[outv]", "-c:v", "libx264", "-preset", "faster",
+                                merged_video_no_audio
+                            ]
+                            safe_ffmpeg_run(cmd, timeout=1800)  # 增加超时时间到30分钟
+                            
+                            # 合并处理好的音频和视频
+                            generate_mp4(temp_audio_mp3, merged_video_no_audio, temp_audio)
+                            output_audio_path = temp_audio
+                        except Exception as e:
+                            print(f"⚠️ 高级视频处理失败: {e}")
+                            print("尝试备用方法...")
+                
+                # 如果片段太多或上面的方法失败，尝试使用分段处理
+                try:
+                    # 将视频分成较大的块进行处理
+                    chunk_size = min(10, max(1, len(merged_segments) // 5))
+                    chunks = [merged_segments[i:i+chunk_size] for i in range(0, len(merged_segments), chunk_size)]
+                    print(f"🧩 将视频分为 {len(chunks)} 个块进行处理")
+                    
+                    chunk_videos = []
+                    for chunk_idx, chunk in enumerate(chunks):
+                        chunk_video = os.path.join(TEMP_DIR, f"chunk_{chunk_idx}.mp4")
+                        chunk_videos.append(chunk_video)
+                        
+                        # 为每个块创建过滤器
+                        filter_parts = []
+                        for i, (start, end) in enumerate(chunk):
+                            duration = end - start
+                            filter_parts.append(f"[0:v]trim=start={start}:end={end},setpts=PTS-STARTPTS[v{i}];")
+                        
+                        filter_str = "".join(filter_parts)
+                        if chunk:
+                            filter_str += "".join(f"[v{i}]" for i in range(len(chunk))) + f"concat=n={len(chunk)}:v=1:a=0[outv]"
+                            
+                            cmd = [
+                                "ffmpeg", "-y", "-i", input_video_path,
+                                "-filter_complex", filter_str,
+                                "-map", "[outv]", "-c:v", "libx264", "-preset", "faster",
+                                chunk_video
+                            ]
+                            safe_ffmpeg_run(cmd, timeout=1200)  # 每个块20分钟超时
+                    
+                    # 合并所有块
+                    chunk_list = os.path.join(TEMP_DIR, "chunk_list.txt")
+                    with open(chunk_list, 'w') as f:
+                        for chunk_video in chunk_videos:
+                            f.write(f"file '{chunk_video}'\n")
+                    
+                    merged_video_no_audio = os.path.join(TEMP_DIR, "merged_video_no_audio.mp4")
+                    safe_ffmpeg_run([
+                        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                        "-i", chunk_list, "-c", "copy", merged_video_no_audio
+                    ])
+                    
+                    # 合并处理好的音频和视频
+                    generate_mp4(temp_audio_mp3, merged_video_no_audio, temp_audio)
+                except Exception as e:
+                    print(f"⚠️ 分块视频处理失败: {e}")
+                    print("回退到基本方法...")
+                    # 如果上述方法都失败，回退到基本方法
+                    clipped_video_path = os.path.join(TEMP_DIR, "clipped_video.mp4")
+                    extract_clip_mp4(input_video_path, clip_start_time, clip_duration, clipped_video_path)
+                    generate_mp4(temp_audio_mp3, clipped_video_path, temp_audio)
+            else:
+                # 如果原始输入是音频，自动生成黑色背景的视频
+                convert_audio_to_video(temp_audio_mp3, temp_audio)
+            
+            output_audio_path = temp_audio
         else:
             if output_format == "wav":
                 with wave.open(temp_files['final_wav'], 'wb') as out_wav:
@@ -350,7 +458,7 @@ def main(input_audio_path, input_srt_path, output_audio_path, output_srt_path,
                 parallel_compress_segments(batch_wavs, output_audio_path, output_format, quality)
 
         print("\n📝 步骤4/4: 生成字幕...")
-        generate_new_srt(subtitles, output_srt_path, filter_texts, start_index, end_index)
+        generate_new_srt(subtitles, output_srt_path, filter_texts, start_index, end_index, adjusted_subtitles)
 
         orig_size = os.path.getsize(temp_files['clip_mp3']) / 1024**2
         final_size = os.path.getsize(output_audio_path) / 1024**2
